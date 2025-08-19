@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <title>מזג אוויר (Open‑Meteo)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; margin: 2rem; }
+    .row { display: flex; gap: .5rem; flex-wrap: wrap; }
+    input, button { padding: .6rem .8rem; font-size: 1rem; }
+    #result { margin-top: 1rem; padding: 1rem; border: 1px solid #ddd; border-radius: 10px; }
+    .muted { color:#666; font-size:.9rem; }
+    .error { color: #b00020; }
+  </style>
+</head>
+<body>
+  <h1>בדיקת מזג אוויר</h1>
+
+  <div class="row">
+    <input id="city" placeholder="לדוגמה: Tel Aviv, Haifa, Jerusalem" value="Tel Aviv" />
+    <button id="go">חפש</button>
+    <button id="geo">השתמש במיקום שלי</button>
+  </div>
+
+  <div id="result" class="muted">הכנס שם עיר ולחץ "חפש".</div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const result = $("result");
+
+    $("go").addEventListener("click", async () => {
+      const name = $("city").value.trim();
+      if (!name) return showError("נא להקליד שם עיר.");
+      try {
+        result.textContent = "טוען…";
+        // 1) גיאוקידינג: המרת שם עיר לקואורדינטות
+        const geoRes = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(name)}&count=1&language=he&format=json`);
+        if (!geoRes.ok) throw new Error("Geocoding failed");
+        const geo = await geoRes.json();
+        if (!geo.results || !geo.results.length) throw new Error("לא נמצאה עיר מתאימה.");
+
+        const { latitude, longitude, name: cityName, country } = geo.results[0];
+
+        // 2) נתוני מזג אוויר נוכחיים ושעה-שעתיים קדימה
+        const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}`
+          + `&current=temperature_2m,wind_speed_10m,relative_humidity_2m,weather_code`
+          + `&hourly=temperature_2m`
+          + `&timezone=auto`;
+        const wRes = await fetch(weatherUrl);
+        if (!wRes.ok) throw new Error("Weather request failed");
+        const w = await wRes.json();
+
+        // פירוק נתונים
+        const cur = w.current;
+        const hourlyTimes = w.hourly.time;
+        const hourlyTemps = w.hourly.temperature_2m;
+
+        // חיזוי קצר: 3 השעות הקרובות (אם קיימות)
+        const nowIndex = hourlyTimes.findIndex(t => t === cur.time);
+        const nextSlice = nowIndex >= 0 ? hourlyTimes.slice(nowIndex, nowIndex + 3)
+          .map((t, i) => ({ time: t, temp: hourlyTemps[nowIndex + i] })) : [];
+
+        // הצגה
+        result.innerHTML = `
+          <div><strong>${cityName}${country ? `, ${country}` : ""}</strong></div>
+          <div>טמפרטורה נוכחית: <strong>${cur.temperature_2m}°C</strong></div>
+          <div>לחות יחסית: ${cur.relative_humidity_2m}% | רוח: ${cur.wind_speed_10m} קמ"ש</div>
+          <hr />
+          <div><strong>השעות הקרובות:</strong></div>
+          <ul>
+            ${nextSlice.map(x => `<li>${formatLocal(x.time)} — ${x.temp}°C</li>`).join("") || "<li>אין נתונים</li>"}
+          </ul>
+          <div class="muted">נלקח מ‑Open‑Meteo.</div>
+        `;
+      } catch (err) {
+        showError(err.message || "קרתה שגיאה בבקשה.");
+        console.error(err);
+      }
+    });
+
+    $("geo").addEventListener("click", () => {
+      if (!navigator.geolocation) return showError("הדפדפן לא תומך במיקום.");
+      result.textContent = "מבקש מיקום…";
+      navigator.geolocation.getCurrentPosition(fetchByCoords, (e) => {
+        showError("לא ניתן לקבל מיקום: " + (e.message || "ההרשאה נדחתה."));
+      });
+    });
+
+    async function fetchByCoords(pos) {
+      try {
+        const { latitude, longitude } = pos.coords;
+        result.textContent = "טוען…";
+        const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}`
+          + `&current=temperature_2m,wind_speed_10m,relative_humidity_2m,weather_code`
+          + `&hourly=temperature_2m`
+          + `&timezone=auto`;
+        const wRes = await fetch(weatherUrl);
+        if (!wRes.ok) throw new Error("Weather request failed");
+        const w = await wRes.json();
+        const cur = w.current;
+
+        result.innerHTML = `
+          <div><strong>מיקום נוכחי</strong></div>
+          <div>טמפרטורה נוכחית: <strong>${cur.temperature_2m}°C</strong></div>
+          <div>לחות יחסית: ${cur.relative_humidity_2m}% | רוח: ${cur.wind_speed_10m} קמ"ש</div>
+          <div class="muted">נלקח מ‑Open‑Meteo.</div>
+        `;
+      } catch (err) {
+        showError(err.message || "קרתה שגיאה בבקשה.");
+        console.error(err);
+      }
+    }
+
+    function showError(msg) {
+      result.innerHTML = `<span class="error">⚠️ ${msg}</span>`;
+    }
+    function formatLocal(iso) {
+      const d = new Date(iso);
+      return d.toLocaleString(undefined, { hour: '2-digit', minute: '2-digit' });
+    }
+  </script>
+</body>
+</html>
